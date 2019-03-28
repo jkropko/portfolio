@@ -1,0 +1,335 @@
+---
+title: "Forecasting The Durations of Events Before and After Elections: The `coxed` Package in Action"
+author: "Jonathan Kropko"
+date: "`r Sys.Date()`"
+output: 
+     rmarkdown::html_vignette:
+          toc: TRUE
+          number_sections: FALSE
+vignette: >
+  %\VignetteIndexEntry{How to use the coxed() function}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+## Executive Summary
+A duration (also known as a survival time) is the amount of time that passes between when an observation enters the data and when an event occurs for that observation. For example, in medical studies, observations are often patients and durations are the length of time each patient survives. Durations are not necessarily morbid, however: it is possible to model the durations until each patient is cured. In political science, durations are used to model the length of wars prior to peace, or the endurance of peace prior to war, or in other areas such as the length of economic recessions or the tenure of a Supreme Court Justice. 
+
+Durations are difficult to forecast because duration distributions can be highly skewed, non-normal, and subject to right-censoring (data collection ends or a subject drops out before a terminating event is observed, leading to some durations that are ongoing in the dataset). In applied work, duration outcomes are often modeled using the Cox proportional hazards (CPH) model (Cox and Oakes 1984, also see <https://www.r-bloggers.com/cox-proportional-hazards-model/>). The CPH model is extremely flexible: it handles any kind of distribution of duration times, and it elegantly accounts for right-censoring. 
+
+The problem with CPH models is in the *interpretation* of these models' results. By default, results can only be understood in terms of hazard-based quantities, which are technical and difficult to communicate to a general audience.^[A hazard function (or hazard rate) is defined as the ratio of the distribution of failure times over the survivor function (one minus the cumulative distribution function for failure times). The hazard function can be thought of as a *conditional* density, describing the probability of failure at any single instant $t$ conditional on survival up until time $t$. Results from a CPH model are typically reported as **hazard ratios**, which express the multiplicative or percent change in the hazard function for a unit-increase in an X variable. My point here is that while these quantities are very frequently used, they fail to convey meaning about expected duration time, or change in duration for changes in X.] Worse, hazards can't be used to forecast durations, so there's no way to understand statistical effects in terms of change in duration or to generate out-of-sample predicted durations. 
+
+Together with a co-author, I developed a method to reconstruct duration forecasts from the results of a CPH model (see Kropko and Harden 2018 for details). The code to implement this technique is available for R through the `coxed` package on the [CRAN repository](https://cran.r-project.org/web/packages/coxed/) (Kropko and Harden 2019). This report serves as technical documentation for the `coxed` package, and demonstrates how to use this package using the example of the timing of important political events that occur before and after elections.
+
+In this report, I consider two phenomena that have been of interest to journalists, policy makers, and political scientists:
+
+1. How long will it take legislators in a multiparty legislature to **negotiate a governing coalition** after an election?
+
+2. What factors **deter quality challengers** from entering a U.S. House of Representatives race?
+
+These questions have previously been addressed in published work. But key findings have been described using the inaccessible language of hazard functions. With regard to the duration of coalition negotiations, Martin and Vanberg (2003) find that negotiations terminate more quickly when the parties are more ideologically similar. They report:
+
+> [W]e find that an increase in the ideological range of the government from zero (the case of a single-party government) to 1.24 (the average range for coalition governments in our sample) decreases the *odds* of government formation on any given day in the bargaining process by approximately 23 percent (p. 331, emphasis added).
+
+In this case, "odds" is a word that describes a result based on hazard rates. While this conclusion supports the notion that larger ideological differences lead to longer negotiations, this particular result conveys no information about the duration of negotiation. We cannot know from the given information if ideology exerts a large or small effect on negotiation duration. Below I replicate this finding and employ the `coxed()` function to determine the change in duration associated with these values of ideological spread: **I find that the average negotiation for a single party government takes 25.3 days to conclude, and the average negotiation for parties with an ideological range of 1.24 takes 28.9 days to conclude, for a difference of 3.6 days** (the 95% confidence interval contains differences between -0.2 days and 7.4 days).
+
+Likewise, Box-Steffensmeier (1996) finds that when an incumbent has more money on hand for conducting a campaign (a "war chest") challengers take longer to declare candidacy in the election. She writes:
+
+> Each $100,000 increase in an incumbent's war chest decreases the *hazard* of a high quality challenger entering by 16% (p. 365, emphasis added).
+
+While this result expresses that larger war chests delay challenger entry, it is based on the hazard function and as such does not describe the length of the delay. I replicate Box-Steffensmeier's model, and find that **an incumbent whose war chest is at the 75th percentile in the data delays the entry of a high quality challenger by 2.7 weeks, on average, compared to an incumbent whose war chest is at the 25th percentile.**
+
+## Installation/Usage
+The stable version of the `coxed` package available for download from CRAN by typing
+```{r, eval=FALSE}
+install.packages("coxed")
+```
+The development version is available on Github and can be downloaded by typing
+```{r, eval=FALSE}
+devtools::install_github("jkropko/coxed")
+```
+
+The `coxed` package includes two top-level functions, `coxed()` and `sim.survdata()`. The `coxed()` function can:
+
+* Generate predicted survival/duration times from the Cox proportional hazards model, both in-sample and for out-of-sample cases
+
+* Calculate marginal changes in expected duration between two given covariate profiles
+
+* Produce standard errors and confidence intervals for the mean or median survival time or difference in duration for each case
+
+Primary usage of the `coxed()` function is
+```{r, eval=FALSE}
+coxed(cox.model, newdata = NULL, newdata2 = NULL, bootstrap = FALSE, method = "npsf")
+```
+where:
+
+* `cox.model` is an object that contains the output of a CPH model estimated with the `survival::coxph()` or `rms::cph()` function
+
+* `newdata` and `newdata2` are optional data frames; if `newdata` is specified, expected durations are calculated for the observations in `newdata`, and if `newdata2` is also specified then marginal changes are calculated by subtracting the expected durations for `newdata2` from the expected durations for `newdata`. If `newdata` is not specified, expected durations are calculated for the estimation sample.
+
+* `bootstrap` calculates bootstrapped standard errors and confidence intervals if TRUE. Additional arguments `B`, `confidence`, and `level` specify the number of bootstrap iterations, the type and level of the confidence interval, respectively.
+
+* `method` can be either "npsf" for the non-parametric step function method of calculating expected durations as described in Kropko and Harden (2018), or "gam" for the generalized additive model method. More details are provided in the examples below.
+
+Full usage of the `coxed()` function is described in the help documentation that can be accessed by typing `?coxed` or `help("coxed")`.
+
+The other top-level function in the `coxed` package, `sim.survdata()` creates simulated survival-time data that can optionally have time-varying covariates or coefficients. Usage is described on the help documentation accessible with `?sim.survdata` or `help("sim.survdata")`.
+
+## Example 1: Duration of Negotiations to Form Governing Coalitions
+The Cox proportional hazards model (implemented in R as `coxph()` in the `survival` package or as `cph()` `rms` package) is one of the most frequently used estimators in duration (survival) analysis. Because it is estimated using only the observed durations' rank ordering, typical quantities of interest used to communicate results of the Cox model come from the hazard function (e.g., hazard ratios or percentage changes in the hazard rate). These quantities are substantively vague and difficult for many audiences of research to understand. The `coxed` package allows researchers to calculate duration-based quantities from Cox model results, such as the expected duration (or survival time) given covariate values and marginal changes in duration for a specified change in a covariate. These duration-based quantities often match better with researchers' substantive interests and are easily understood by most readers.
+
+This section is a walk-through of various ways to use the `coxed()` function.
+
+Before I begin, I load the `coxed` package,
+```{r libraries, message=FALSE, warning=FALSE}
+library(coxed)
+```
+and packages from the `tidyverse` for managing and plotting data as I go:
+```{r libraries2, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+```
+
+### Running a Cox proportional hazards model
+The following quote from Kropko and Harden (2018) sets up our first working example:
+
+> Martin and Vanberg (2003) examine the determinants of negotiation time among political parties forming a coalition government. . . . The dependent variable in Martin and Vanberg’s analysis is the number of days between the beginning and end of the bargaining period. Martin and Vanberg model this variable as a function of the Range of government, which is a measure of the ideological distance between the extreme members of the coalition, the Number of government parties in the coalition, and several other variables. They interact Number of government parties with the natural log of time because that variable violates the proportional hazards assumption. Their hypotheses predict negative coefficients on the variables of interest, indicating that increases in the ideological distance between the parties and in the number of parties correspond with a decrease in the risk of government formation, or a longer negotiation time.
+
+The authors demonstrate support for their hypotheses by computing changes in the hazard rate based on changes to these independent variables. However, to assess what the estimated effects of Range of government and Number of government parties mean in substantive terms, I use `coxed()` to predict how long is each case predicted to last. I will also find answers to the following questions about duration: 
+
+* How much longer will negotiations take for an ideologically polarized coalition as compared to an ideologically homogeneous one?
+
+* How much longer will negotiations take for a multiparty coalition government than for a single-party government?
+
+First I replicate the Cox model from Martin and Vanberg (2003):
+```{r coxmodel}
+mv.surv <- Surv(martinvanberg$formdur, event = rep(1, nrow(martinvanberg)))
+mv.cox <- coxph(mv.surv ~ postel + prevdef + cont + ident + rgovm + pgovno + 
+                     tpgovno + minority, method = "breslow", data = martinvanberg)
+summary(mv.cox)
+```
+
+Next I will use the both versions of `coxed()` to examine expected durations and marginal changes in duration.
+
+### Using the NPSF method within the `coxed()` function
+The first version of `coxed()` is the non-parametric step function (NPSF) approach.  The NPSF method estimates a survivor function for every observation in the given data, which by necessity given the mathematical construction of the CPH model must be a step function. The expected durations are calculated from these survivor step-functions. Full details are reported in Kropko and Harden (2018).
+
+To use the NPSF version of `coxed()`, specify `model="npsf"` in the call to the function. By default, quantities are estimated without standard errors, but to estimate SEs and confidence intervals specify `bootstrap=TRUE`.
+
+#### Without standard errors
+To see predicted durations from the Cox model, place the Cox model output as the first argument of `coxed()`:
+```{r npsf1}
+ed1 <- coxed(mv.cox, method="npsf")
+```
+There are a number of uses of the `coxed()` output.  First, the predicted durations for each individual observation are stored in the `exp.dur` attribute:
+```{r npsfexpdur}
+head(ed1$exp.dur)
+```
+The `summary()` function, when applied to `coxed`, reports either the mean or median duration in the estimation sample, depending on the option specified with `stat`:
+```{r sumamrynpsf}
+summary(ed1, stat="mean")
+summary(ed1, stat="median")
+```
+The predicted mean duration of government negotiations is 25.18 days, and the predicted median duration is 19.12 days.
+
+In addition to reporting the mean and median duration, the NPSF version of `coxed()` provides estimates of the cumulative baseline hazard function and the baseline survivor function in the data. These functions are stored as a data frame in the `baseline.functions` attribute.
+```{r baselinefun}
+head(ed1$baseline.functions)
+```
+
+I can plot these baseline functions with `ggplot()`:
+```{r baselineplot, fig.width=6, fig.height=4}
+baseline <- gather(ed1$baseline.functions, cbh, survivor, key="survivefunction", value="value")
+ggplot(baseline, aes(x=time, y=value)) +
+     geom_line() +
+     xlab("Time") +
+     ylab("Function") +
+     facet_wrap( ~ survivefunction, scales = "free")
+```
+
+#### With (bootstrapped) standard errors
+I can calculate standard errors and confidence intervals for any of these quantities with the `bootstrap=TRUE` option.  By default the bootstrapping procedure uses 200 iterations (to set this value to a different number, use the `B` argument). Here I use 30 iterations simply to ease the computational burden of compiling this vignette. For more reliable results, set `B` to a higher value: 
+```{r npsfbs}
+ed1 <- coxed(mv.cox, method="npsf", bootstrap = TRUE, B=30)
+```
+Now every predicted duration has a standard error and a 95% confidence interval.
+```{r bsexpdurnpsf}
+head(ed1$exp.dur)
+```
+The mean and median also have standard errors and confidence intervals.
+```{r npsfsummarybs}
+summary(ed1, stat="mean")
+summary(ed1, stat="median")
+```
+To change the confidence interval to a different level, use the `level` argument:
+```{r npsfbs3}
+ed1 <- coxed(mv.cox, method="npsf", bootstrap = TRUE, B=30, level=.8)
+summary(ed1, stat="mean")
+summary(ed1, stat="median")
+```
+There are different methods for calculating a bootstrapped confidence interval.  The default method used by `coxed()` (setting the argument `confidence="studentized"`) adds and subtracts `qnorm(level - (1 - level)/2)` times the bootstrapped standard error to the point estimate. The alternative approach is to take the `(1-level)/2` and `level + (1-level)/2` quantiles of the bootstrapped draws, which can be done by specifying `confidence="empirical"` (I recommend a higher number of bootstrap iterations for empirical confidence intervals):
+```{r npsfbs4}
+ed1 <- coxed(mv.cox, method="npsf", bootstrap = TRUE, B=30, confidence="empirical")
+summary(ed1, stat="mean")
+summary(ed1, stat="median")
+```
+
+#### Out of sample prediction
+`coxed()` can be used to provide duration predictions for observations outside of the estimation sample.  Suppose that I observe three new cases and place them inside a new data frame:
+```{r newdataframe}
+new.coalitions <- data.frame(postel = c(1,0,0),
+                             prevdef = c(1,0,1),
+                             cont = c(1,0,0),
+                             ident = c(1,3,2),
+                             rgovm = c(0.81, 0.62, 1.18),
+                             pgovno = c(2,3,4),
+                             tpgovno = c(3.58, 5.17, 10.2),
+                             minority = c(0,0,1))
+new.coalitions
+```
+To forecast durations for these cases along with standard errors and confidence intervals, I use the `coxed()` function and place `new.coalitions` into the `newdata` argument:
+```{r coxedoutofsample}
+forecast <- coxed(mv.cox, newdata=new.coalitions, method="npsf", bootstrap=TRUE, B=30)
+forecast$exp.dur
+```
+
+#### Marginal changes in expected duration
+Here I use `coxed()` to provide answers to the two duration-based questions I posed in the introduction.  First consider "How much longer will negotiations take for an ideologically polarized coalition as compared to an ideologically homogeneous one?" To answer this question, I call `coxed()` and specify two new datasets, one in which `rgovm=0` indicating that all political parties in the governing coalition have the same ideological position, and one in which `rgovm=1.24`, indicating that the parties have very different ideological positions.  I use `mutate()` from the `dplyr` library to quickly create new data frames in which `rgovm` equals 0 or 1.24 for all cases, and set these two data frames as `newdata` and `newdata2` inside `coxed()`.   
+```{r npsfme}
+me <- coxed(mv.cox, method = "gam", bootstrap = TRUE, B = 30,
+            newdata = dplyr::mutate(martinvanberg, rgovm = 0),
+            newdata2 = dplyr::mutate(martinvanberg, rgovm = 1.24))
+```
+`coxed()` calculates expected durations for all cases under each new data frame and subtracts the durations for each case.  As an overall result, I can see either the mean or the median of these differences.
+```{r npsfmesummary}
+summary(me, stat="mean")
+summary(me, stat="median")
+```
+A coalition in which the parties have ideological differences so that `rgovm=1.24` will take 3.08 more days on average (with a median of 2.6 days) to conclude negotiations than a coalition in which all parties have the same position. 
+
+Next I consider "How much longer will negotiations take for a multiparty coalition government than for a single-party government?" In this case I compare coalitions with one party to coalitions with 6 parties by setting the `pgovno` variable to 1 and 6 and setting these two data frames as the `newdata` and `newdata2` arguments of `coxed()`:
+```{r menpsf2}
+me <- coxed(mv.cox, method="npsf", bootstrap = TRUE, B=30,
+            newdata = dplyr::mutate(martinvanberg, pgovno=1),
+            newdata2 = dplyr::mutate(martinvanberg, pgovno=6))
+summary(me, stat="mean")
+summary(me, stat="median")
+```
+A coalition of 6 parties will take 50.5 more days on average (with a median of 28.5 days) to conclude negotiations than a coalition with one party.
+
+### Using the GAM method within the `coxed()` function
+The generalized additive model (GAM) method is a second implementation of the `coxed` method that is likely to work better when there are long periods that separate one failure from the next. GAMs are locally-weighted smoothing models, and are described in detail in Kropko and Harden (2018) and also here: <https://www.r-bloggers.com/generalized-additive-models/>.
+
+I can use the GAM method for all of the same uses for which I used the NPSF method above, except for estimating the baseline functions. I can however view and plot the output from the GAM model that maps predicted ranks to duration. While the `bootstrap=TRUE` argument works when `method="gam"`, these functions take somewhat longer to run.  I therefore run the following examples without bootstrapping.
+
+As before, to see predicted durations from the Cox model, place the Cox model output as the first argument of `coxed()`. The predicted durations for each individual observation are stored in the `exp.dur` attribute,
+```{r gam}
+ed2 <- coxed(mv.cox, method="gam")
+head(ed2$exp.dur)
+```
+and `summary()` reports either the mean or median expected duration:
+```{r gamsummary}
+summary(ed2, stat="mean")
+summary(ed2, stat="median")
+```
+
+#### Out of sample prediction
+The GAM method can also forecast durations for new data along with standard errors and confidence intervals. Here I use the `coxed()` function with `method="gam"` and place the `new.coalitions` I created above into the `newdata` argument:
+```{r coxedoutofsample2}
+forecast <- coxed(mv.cox, newdata=new.coalitions, method="gam")
+forecast$exp.dur
+```
+
+#### Marginal changes in expected duration
+Here I again calculate the two marginal effects to better understand the substantive meaning of the Cox model.  This time I employ the GAM method instead of the NPSF method. The GAM method may provide a warning that some observations have linear predictors that are greater than or less than all of the observed cases in the estimation sample. Some observations falling outside the range of the original linear predictors is to be expected when applying new data, but if it happens with too many of the new observations NPSF may be a better option for estimating these quantities.
+```{r gammebs}
+me <- coxed(mv.cox, method="gam",
+            newdata = dplyr::mutate(martinvanberg, rgovm=0),
+            newdata2 = dplyr::mutate(martinvanberg, rgovm=1.24))
+summary(me, stat="mean")
+summary(me, stat="median")
+```
+
+```{r gammebs2}
+me <- coxed(mv.cox, method="gam", 
+            newdata = dplyr::mutate(martinvanberg, pgovno=1),
+            newdata2 = dplyr::mutate(martinvanberg, pgovno=6))
+summary(me, stat="mean")
+summary(me, stat="median")
+```
+
+#### Plotting the GAM fit
+The data used by `coxed()` to map rankings to durations are stored in the `gam.data` attribute, and the output from the GAM is stored in `gam.model`:
+```{r gammodel}
+summary(ed2$gam.data)
+summary(ed2$gam.model)
+```
+The `gam.data` can be used to visualize the fit of the GAM:
+```{r gamfit, fig.width=6, fig.height=6, fig.align="center"}
+ggplot(ed2$gam.data, aes(x=rank.xb, y=y)) +
+     geom_point() +
+     geom_line(aes(x=rank.xb, y=gam_fit)) +
+     geom_ribbon(aes(ymin=gam_fit_95lb, ymax=gam_fit_95ub), alpha=.5) +
+     xlab("Cox model LP rank (smallest to largest)") +
+     ylab("Duration")
+```
+
+
+### Comparing the predicted durations to the observed durations and to each other
+Given that `coxed()` contains two alternative methods for generating expected durations, it is possible to compare the estimates.  Both correlate positively the observed durations, and the GAM and NPSF durations correlate even more strongly with each other.
+```{r tester}
+tester <- data.frame(y=martinvanberg$formdur, npsf=ed1$exp.dur$exp.dur, gam=ed2$exp.dur$exp.dur)
+cor(tester)
+```
+Scatterplots visualize these correlations:
+```{r tester2, fig.width=6, fig.height=6, fig.align="center"}
+pairs(tester)
+```
+
+## Example 2: Incumbent Fundraising and Detering Quality Challengers
+This example illustrates how to use `coxed()` to calculate expected durations and marginal changes in duration when the CPH model includes time-varying covariates. To set up this example, I quote from the online appendix to Kropko and Harden (2018):
+
+> Box-Steffensmeier (1996) examines whether U.S. House incumbents’ ability to raise campaign funds can effectively deter quality challengers from entering the race. The theoretical expectation is that as incumbents raise more money, challengers further delay their decision to run for the incumbent’s seat. She employs data on 397 House races in the 1989–1990 election cycle to test this hypothesis. The dependent variable in this analysis is the number of weeks after January 1, 1989 when a challenger entered the race. Races in which no challenger entered are coded as the number of weeks after January 1 when the state’s primary filing deadline occurred, and are treated as censored. The key independent variable is the incumbent’s War chest, or the amount of money in millions of dollars that the incumbent has in reserve at a given time. Importantly, this measure updates over the course of five Federal Election Commission (FEC) reporting periods, so it is a time-varying covariate (TVC). The theory predicts a negative coefficient on this variable, which would indicate that as the incumbent raises more money, the hazard of challenger entry declines (and the time until entry increases).
+
+Box-Steffensmeier's model is replicated below. Note that the `Surv()` function which sets up the dependent variable has two time arguments, representing the start and end of discrete intervals, which allows a covariate to take on different values across different intervals for the same observation.
+```{r tvc}
+bs.surv <- Surv(time = boxsteffensmeier$start, time2 = boxsteffensmeier$te, event = boxsteffensmeier$cut_hi)
+bs.cox <- coxph(bs.surv ~ ec + dem + south + iv, data = boxsteffensmeier, method = "breslow")
+summary(bs.cox)
+```
+
+The `coxed()` function automatically detects whether time-varying covariates are used in the model and it takes steps to account for this structure in predicting expected durations and in estimating marginal effects. The only additional step that the user needs to take is to specify the ID variable in the `id` argument, so that the function knows which intervals refer to which observations.
+```{r tvced}
+ed1 <- coxed(bs.cox, method="npsf", id=boxsteffensmeier$caseid)
+summary(ed1, stat="mean")
+```
+
+Here I look directly at the effect of the war chest on the length of time until a high quality challenger enters the race.  I compare the 25th and 75th percentiles in war chest variable:
+```{r tvcme}
+me <- coxed(bs.cox, method="npsf",
+            newdata = mutate(boxsteffensmeier, ec=quantile(ec, .25)),
+            newdata2 = mutate(boxsteffensmeier, ec=quantile(ec, .75)),
+            id=boxsteffensmeier$caseid)
+summary(me, stat="mean")
+summary(me, stat="median")
+
+```
+An incumbent whose war chest is at the 75th percentile in the data delays the entry of a high quality challenger by 2.7 weeks, on average, compared to an incumbent whose war chest is at the 25th percentile.
+
+# Conclusion
+The `coxed` method is part of a growing movement in statistics to emphasize the substantive meaning of empirical results. Rather than relying solely on the direction of an effect and a p-value, an increasing number of statistical researchers report what their results describe in terms of real changes in the data. 
+
+Our goal in developing the `coxed` is to give applied researchers an easy-to-use and open-source tool to take robust and flexible results from a CPH model and express those results in terms of durations and changes in duration. These duration-based quantities are much more intuitive and accessible to a wide audience than hazard-based results. They also provide needed context: a hazard ratio can make an effect appear to be larger than it really is in terms of duration.
+
+# References
+
+* Box-Steffensmeier, J. M. (1996) "A Dynamic Analysis of The Role of War Chests in Campaign Strategy." *American Journal of Political Science* **40**: 352-371. 
+
+* Cox, D. R.; Oakes, D. (1984). *Analysis of Survival Data.* New York: Chapman & Hall. ISBN 978-0412244902.
+
+* Kropko, J. and Harden, J. J. (2018) "Beyond the Hazard Ratio: Generating Expected Durations from the Cox Proportional Hazards Model." *British Journal of Political Science* <https://doi.org/10.1017/S000712341700045X>
+
+* Kropko, J. and Harden, J. J. (2019). *coxed: Duration-Based Quantities of Interest for the Cox Proportional Hazards Model.* R package version 0.2.3. <https://github.com/jkropko/coxed>
+
+* Martin, L. W and Vanberg, G. (2003) "Wasting Time? The Impact of Ideology and Size on Delay in Coalition Formation." *British Journal of Political Science* **33** 323-344 <https://doi.org/10.1017/S0007123403000140>
